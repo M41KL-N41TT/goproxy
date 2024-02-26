@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"sync/atomic"
+
+	"github.com/imroc/req/v3"
 )
 
 // The basic proxy type. Implements http.Handler.
@@ -26,7 +28,7 @@ type ProxyHttpServer struct {
 	reqHandlers     []ReqHandler
 	respHandlers    []RespHandler
 	httpsHandlers   []HttpsHandler
-	Tr              *http.Transport
+	Tr              http.RoundTripper
 	// ConnectDial will be used to create TCP connections for CONNECT requests
 	// if nil Tr.Dial will be used
 	ConnectDial        func(network string, addr string) (net.Conn, error)
@@ -123,87 +125,113 @@ func (fw flushWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// Standard net/http function. Shouldn't be used directly, http.Serve will use it.
-func (proxy *ProxyHttpServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	//r.Header["X-Forwarded-For"] = w.RemoteAddr()
+// ServeHTTP directs HTTP requests to either handle HTTPS or regular requests.
+func (p *ProxyHttpServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "CONNECT" {
-		proxy.handleHttps(w, r)
-	} else {
-		ctx := &ProxyCtx{Req: r, Session: atomic.AddInt64(&proxy.sess, 1), Proxy: proxy}
+		p.handleHttps(w, r)
+		return
+	}
+	p.handleHttpRequest(w, r)
+}
 
-		var err error
-		ctx.Logf("Got request %v %v %v %v", r.URL.Path, r.Host, r.Method, r.URL.String())
-		if !r.URL.IsAbs() {
-			proxy.NonproxyHandler.ServeHTTP(w, r)
-			return
-		}
-		r, resp := proxy.filterRequest(r, ctx)
+// handleHttpRequest handles non-HTTPS (HTTP and WebSocket) proxy requests.
+func (p *ProxyHttpServer) handleHttpRequest(w http.ResponseWriter, r *http.Request) {
+	ctx := &ProxyCtx{Req: r, Session: atomic.AddInt64(&p.sess, 1), Proxy: p}
 
-		if resp == nil {
-			if isWebSocketRequest(r) {
-				ctx.Logf("Request looks like websocket upgrade.")
-				proxy.serveWebsocket(ctx, w, r)
-			}
+	ctx.Logf("Received request %v %v %v %v", r.URL.Path, r.Host, r.Method, r.URL.String())
 
-			if !proxy.KeepHeader {
-				removeProxyHeaders(ctx, r)
-			}
-			resp, err = ctx.RoundTrip(r)
-			if err != nil {
-				ctx.Error = err
-				resp = proxy.filterResponse(nil, ctx)
+	if !enforceAbsoluteURL(r) {
+		p.NonproxyHandler.ServeHTTP(w, r)
+		return
+	}
 
-			}
-			if resp != nil {
-				ctx.Logf("Received response %v", resp.Status)
-			}
-		}
+	r, resp := p.filterRequest(r, ctx)
+	if r == nil && resp == nil {
+		ctx.Logf("Request and response are nil, returning original request %s", r.URL.String())
+		p.NonproxyHandler.ServeHTTP(w, r)
+		return
+	}
 
-		var origBody io.ReadCloser
+	if r != nil {
+		p.handleClientRequest(ctx, w, r)
+	}
+}
 
-		if resp != nil {
-			origBody = resp.Body
-			defer origBody.Close()
-		}
+// enforceAbsoluteURL ensures request URL is absolute, modifying the request if necessary.
+func enforceAbsoluteURL(r *http.Request) bool {
+	if !r.URL.IsAbs() {
+		r.URL.Scheme = "https"
+		r.URL.Host = r.Host
+	}
+	return r.URL.IsAbs()
+}
 
-		resp = proxy.filterResponse(resp, ctx)
+// handleClientRequest processes the request from the client and writes the response back.
+func (p *ProxyHttpServer) handleClientRequest(ctx *ProxyCtx, w http.ResponseWriter, r *http.Request) {
+	if isWebSocketRequest(r) {
+		ctx.Logf("Request is a WebSocket upgrade.")
+		p.serveWebsocket(ctx, w, r)
+		return
+	}
 
-		if resp == nil {
-			var errorString string
-			if ctx.Error != nil {
-				errorString = "error read response " + r.URL.Host + " : " + ctx.Error.Error()
-				ctx.Logf(errorString)
-				http.Error(w, ctx.Error.Error(), 500)
-			} else {
-				errorString = "error read response " + r.URL.Host
-				ctx.Logf(errorString)
-				http.Error(w, errorString, 500)
-			}
-			return
-		}
-		ctx.Logf("Copying response to client %v [%d]", resp.Status, resp.StatusCode)
-		// http.ResponseWriter will take care of filling the correct response length
-		// Setting it now, might impose wrong value, contradicting the actual new
-		// body the user returned.
-		// We keep the original body to remove the header only if things changed.
-		// This will prevent problems with HEAD requests where there's no body, yet,
-		// the Content-Length header should be set.
-		if origBody != resp.Body {
-			resp.Header.Del("Content-Length")
-		}
-		copyHeaders(w.Header(), resp.Header, proxy.KeepDestinationHeaders)
-		w.WriteHeader(resp.StatusCode)
-		var copyWriter io.Writer = w
-		if w.Header().Get("content-type") == "text/event-stream" {
-			// server-side events, flush the buffered data to the client.
-			copyWriter = &flushWriter{w: w}
-		}
+	if !p.KeepHeader {
+		removeProxyHeaders(ctx, r)
+	}
 
-		nr, err := io.Copy(copyWriter, resp.Body)
-		if err := resp.Body.Close(); err != nil {
-			ctx.Warnf("Can't close response body %v", err)
-		}
-		ctx.Logf("Copied %v bytes to client error=%v", nr, err)
+	reqTr := req.C().GetTransport()
+
+	resp, err := reqTr.RoundTrip(r)
+	if err != nil {
+		ctx.Error = err
+		resp = p.filterResponse(nil, ctx)
+	}
+
+	if resp != nil {
+		ctx.Logf("Received response %v", resp.Status)
+		writeResponseToClient(ctx, w, resp)
+	}
+}
+
+// writeResponseToClient writes the filtered response back to the client.
+func writeResponseToClient(ctx *ProxyCtx, w http.ResponseWriter, resp *http.Response) {
+	defer resp.Body.Close()
+	resp = ctx.Proxy.filterResponse(resp, ctx)
+	if resp == nil {
+		handleResponseError(ctx, w, resp)
+		return
+	}
+
+	ctx.Logf("Copying response to client %v [%d]", resp.Status, resp.StatusCode)
+	resp.Header.Del("Content-Length") // Ensure Content-Length is recalculated.
+	copyHeaders(w.Header(), resp.Header, ctx.Proxy.KeepDestinationHeaders)
+
+	w.WriteHeader(resp.StatusCode)
+	copyResponseBody(w, resp.Body, ctx)
+}
+
+// handleResponseError handles error scenarios when reading response fails.
+func handleResponseError(ctx *ProxyCtx, w http.ResponseWriter, resp *http.Response) {
+	errorString := "error reading response " + ctx.Req.URL.Host
+	if ctx.Error != nil {
+		errorString += " : " + ctx.Error.Error()
+		ctx.Logf(errorString)
+		http.Error(w, ctx.Error.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	ctx.Logf(errorString)
+	http.Error(w, errorString, http.StatusInternalServerError)
+}
+
+// copyResponseBody copies the response body to the client, supports server-sent events.
+func copyResponseBody(w http.ResponseWriter, body io.Reader, ctx *ProxyCtx) {
+	var copyWriter io.Writer = w
+	if w.Header().Get("Content-Type") == "text/event-stream" {
+		copyWriter = &flushWriter{w: w}
+	}
+
+	if _, err := io.Copy(copyWriter, body); err != nil {
+		ctx.Warnf("Error while copying response body to client: %v", err)
 	}
 }
 
@@ -217,10 +245,20 @@ func NewProxyHttpServer() *ProxyHttpServer {
 		NonproxyHandler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "This is a proxy server. Does not respond to non-proxy requests.", 500)
 		}),
-		Tr: &http.Transport{TLSClientConfig: tlsClientSkipVerify, Proxy: http.ProxyFromEnvironment},
+		// Tr: &http.Transport{TLSClientConfig: tlsClientSkipVerify, Proxy: http.ProxyFromEnvironment},
 	}
+	reqTransport := req.NewTransport()
+	reqTransport.
+		SetTLSClientConfig(defaultTLSConfig).
+		SetProxy(http.ProxyFromEnvironment)
 
-	proxy.ConnectDial = dialerFromEnv(&proxy)
+	// Adjust the proxy's transport to use reqTransport
+	proxy.Tr = reqTransport.WrapRoundTripFunc(func(rt http.RoundTripper) req.HttpRoundTripFunc {
+		return func(req *http.Request) (resp *http.Response, err error) {
+			resp, err = rt.RoundTrip(req)
+			return
+		}
+	})
 
 	return &proxy
 }
