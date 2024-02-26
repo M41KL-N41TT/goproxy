@@ -10,8 +10,6 @@ import (
 	"regexp"
 	"strings"
 	"sync/atomic"
-
-	"github.com/imroc/req/v3"
 )
 
 // The basic proxy type. Implements http.Handler.
@@ -28,7 +26,7 @@ type ProxyHttpServer struct {
 	reqHandlers     []ReqHandler
 	respHandlers    []RespHandler
 	httpsHandlers   []HttpsHandler
-	Tr              http.RoundTripper
+	Tr              *http.Transport
 	// ConnectDial will be used to create TCP connections for CONNECT requests
 	// if nil Tr.Dial will be used
 	ConnectDial        func(network string, addr string) (net.Conn, error)
@@ -323,20 +321,20 @@ func NewProxyHttpServer() *ProxyHttpServer {
 		NonproxyHandler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "This is a proxy server. Does not respond to non-proxy requests.", 500)
 		}),
-		// Tr: &http.Transport{TLSClientConfig: tlsClientSkipVerify, Proxy: http.ProxyFromEnvironment},
+		Tr: &http.Transport{TLSClientConfig: tlsClientSkipVerify, Proxy: http.ProxyFromEnvironment},
 	}
-	reqTransport := req.NewTransport()
-	reqTransport.
-		SetTLSClientConfig(defaultTLSConfig).
-		SetProxy(http.ProxyFromEnvironment)
+	// reqTransport := req.NewTransport()
+	// reqTransport.
+	// 	SetTLSClientConfig(defaultTLSConfig).
+	// 	SetProxy(http.ProxyFromEnvironment)
 
-	// Adjust the proxy's transport to use reqTransport
-	proxy.Tr = reqTransport.WrapRoundTripFunc(func(rt http.RoundTripper) req.HttpRoundTripFunc {
-		return func(req *http.Request) (resp *http.Response, err error) {
-			resp, err = rt.RoundTrip(req)
-			return
-		}
-	})
+	// // Adjust the proxy's transport to use reqTransport
+	// proxy.Tr = reqTransport.WrapRoundTripFunc(func(rt http.RoundTripper) req.HttpRoundTripFunc {
+	// 	return func(req *http.Request) (resp *http.Response, err error) {
+	// 		resp, err = rt.RoundTrip(req)
+	// 		return
+	// 	}
+	// })
 	proxy.ConnectDial = dialerFromEnv(&proxy)
 	return &proxy
 }

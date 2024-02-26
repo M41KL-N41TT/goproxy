@@ -429,7 +429,7 @@ func (proxy *ProxyHttpServer) NewConnectDialToProxyWithHandler(https_proxy strin
 			if err != nil {
 				return nil, err
 			}
-			c = tls.Client(c, proxy.Tr.(*http.Transport).TLSClientConfig)
+			c = tls.Client(c, proxy.Tr.TLSClientConfig)
 			connectReq := &http.Request{
 				Method: "CONNECT",
 				URL:    &url.URL{Opaque: addr},
