@@ -178,9 +178,7 @@ func (p *ProxyHttpServer) handleClientRequest(ctx *ProxyCtx, w http.ResponseWrit
 		removeProxyHeaders(ctx, r)
 	}
 
-	reqTr := req.C().GetTransport()
-
-	resp, err := reqTr.RoundTrip(r)
+	resp, err := p.Tr.RoundTrip(r)
 	if err != nil {
 		ctx.Error = err
 		resp = p.filterResponse(nil, ctx)
@@ -259,6 +257,6 @@ func NewProxyHttpServer() *ProxyHttpServer {
 			return
 		}
 	})
-
+	proxy.ConnectDial = dialerFromEnv(&proxy)
 	return &proxy
 }
