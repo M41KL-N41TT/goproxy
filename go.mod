@@ -1,4 +1,4 @@
-module github.com/elazarl/goproxy
+module github.com/M41KL-N41TT/goproxy
 
 go 1.22.0
 
