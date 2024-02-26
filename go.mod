@@ -1,3 +1,5 @@
 module github.com/elazarl/goproxy
 
-require github.com/elazarl/goproxy/ext v0.0.0-20190711103511-473e67f1d7d2
+go 1.22.0
+
+require github.com/elazarl/goproxy/ext v0.0.0-20231117061959-7cc037d33fb5

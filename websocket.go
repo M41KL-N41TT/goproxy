@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/tls"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -26,7 +27,11 @@ func isWebSocketRequest(r *http.Request) bool {
 }
 
 func (proxy *ProxyHttpServer) serveWebsocketTLS(ctx *ProxyCtx, w http.ResponseWriter, req *http.Request, tlsConfig *tls.Config, clientConn *tls.Conn) {
-	targetURL := url.URL{Scheme: "wss", Host: req.URL.Host, Path: req.URL.Path}
+	host, port, _ := net.SplitHostPort(req.URL.Host)
+	if port == "" {
+		host += ":443"
+	}
+	targetURL := url.URL{Scheme: "wss", Host: host, Path: req.URL.Path}
 
 	// Connect to upstream
 	targetConn, err := tls.Dial("tcp", targetURL.Host, tlsConfig)
@@ -47,7 +52,11 @@ func (proxy *ProxyHttpServer) serveWebsocketTLS(ctx *ProxyCtx, w http.ResponseWr
 }
 
 func (proxy *ProxyHttpServer) serveWebsocket(ctx *ProxyCtx, w http.ResponseWriter, req *http.Request) {
-	targetURL := url.URL{Scheme: "ws", Host: req.URL.Host, Path: req.URL.Path}
+	host, port, _ := net.SplitHostPort(req.URL.Host)
+	if port == "" {
+		host += ":80"
+	}
+	targetURL := url.URL{Scheme: "ws", Host: host, Path: req.URL.Path}
 
 	targetConn, err := proxy.connectDial(ctx, "tcp", targetURL.Host)
 	if err != nil {
