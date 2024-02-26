@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strings"
 	"sync/atomic"
 )
 
@@ -76,33 +77,36 @@ func (proxy *ProxyHttpServer) filterResponse(respOrig *http.Response, ctx *Proxy
 }
 
 func removeProxyHeaders(ctx *ProxyCtx, r *http.Request) {
-	r.RequestURI = "" // this must be reset when serving a request with the client
-	ctx.Logf("Sending request %v %v", r.Method, r.URL.String())
-	// If no Accept-Encoding header exists, Transport will add the headers it can accept
-	// and would wrap the response body with the relevant reader.
+	r.RequestURI = "" // Reset request URI for proxy handling
+	ctx.Logf("removeProxyHeaders: request %v %v", r.Method, r.URL.String())
+	// Prevent automatic compression negotiation
+	// TODO: implement compression
 	r.Header.Del("Accept-Encoding")
-	// curl can add that, see
-	// https://jdebp.eu./FGA/web-proxy-connection-header.html
-	r.Header.Del("Proxy-Connection")
-	r.Header.Del("Proxy-Authenticate")
-	r.Header.Del("Proxy-Authorization")
-	// Connection, Authenticate and Authorization are single hop Header:
-	// http://www.w3.org/Protocols/rfc2616/rfc2616.txt
-	// 14.10 Connection
-	//   The Connection general-header field allows the sender to specify
-	//   options that are desired for that particular connection and MUST NOT
-	//   be communicated by proxies over further connections.
-
-	// When server reads http request it sets req.Close to true if
-	// "Connection" header contains "close".
-	// https://github.com/golang/go/blob/master/src/net/http/request.go#L1080
-	// Later, transfer.go adds "Connection: close" back when req.Close is true
-	// https://github.com/golang/go/blob/master/src/net/http/transfer.go#L275
-	// That's why tests that checks "Connection: close" removal fail
-	if r.Header.Get("Connection") == "close" {
+	// Address potential incorrect connection closure by backend server
+	if strings.EqualFold(r.Header.Get("Connection"), "close") {
 		r.Close = false
 	}
-	r.Header.Del("Connection")
+	// Remove standard proxy-related headers
+	headersToRemove := []string{
+		"Proxy-Connection",
+		"Proxy-Authenticate",
+		"Proxy-Authorization",
+		"Proxy-Forwarded-For",
+		"Proxy-Remote-User",
+		"Proxy-Server",
+		"Proxy-User-Agent",
+		"X-Forwarded-For",
+		"X-Forwarded-Host",
+		"X-Forwarded-Proto",
+		"Via",
+		"Client-IP",
+		"True-Client-IP",
+		"CF-Connecting-IP",
+		"Connection",
+	}
+	for _, header := range headersToRemove {
+		r.Header.Del(header)
+	}
 }
 
 type flushWriter struct {
