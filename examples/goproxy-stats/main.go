@@ -7,7 +7,7 @@ import (
 	. "net/http"
 	"time"
 
-	"github.com/elazarl/goproxy"
+	"github.com/M41KL-N41TT/goproxy"
 	goproxy_html "github.com/elazarl/goproxy/ext/html"
 )
 

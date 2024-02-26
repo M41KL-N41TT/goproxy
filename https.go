@@ -72,8 +72,8 @@ func stripPort(s string) string {
 }
 
 func (proxy *ProxyHttpServer) dial(network, addr string) (c net.Conn, err error) {
-	if proxy.Tr.Dial != nil {
-		return proxy.Tr.Dial(network, addr)
+	if proxy.Tr.(*http.Transport).Dial != nil {
+		return proxy.Tr.(*http.Transport).Dial(network, addr)
 	}
 	return net.Dial(network, addr)
 }
@@ -429,7 +429,7 @@ func (proxy *ProxyHttpServer) NewConnectDialToProxyWithHandler(https_proxy strin
 			if err != nil {
 				return nil, err
 			}
-			c = tls.Client(c, proxy.Tr.TLSClientConfig)
+			c = tls.Client(c, proxy.Tr.(*http.Transport).TLSClientConfig)
 			connectReq := &http.Request{
 				Method: "CONNECT",
 				URL:    &url.URL{Opaque: addr},

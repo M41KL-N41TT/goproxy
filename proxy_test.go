@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/elazarl/goproxy"
+	"github.com/M41KL-N41TT/goproxy"
 	goproxy_image "github.com/elazarl/goproxy/ext/image"
 )
 
